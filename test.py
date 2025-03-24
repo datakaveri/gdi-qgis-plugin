@@ -47,7 +47,7 @@ class LoginDialog(QtWidgets.QDialog, Ui_LoginDialog):
 
     def check_credentials(self):
         # Define your authentication server URL here
-        auth_server_url = 'https://dx.ugix.org.in/auth/v1/token'
+        auth_server_url = 'https://dx.geospatial.org.in/auth/v1/token'
         client_id = 'f1309bc3-5f84-4840-b489-185f62521238'
         client_secret = '20efea7113f58dd7a7b56f2dca4a3a14e4192859'
         username = self.lineEdit_username.text()
@@ -62,7 +62,7 @@ class LoginDialog(QtWidgets.QDialog, Ui_LoginDialog):
         login_data = {
             'username': username,
             'password': password,
-            "itemId": "geoserver.dx.ugix.org.in",
+            "itemId": "geoserver.dx.geospatial.org.in",
             "itemType": "resource_server",
             "role": "consumer"
         }

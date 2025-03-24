@@ -33,7 +33,7 @@ hasProcessingProvider=no
 tags=python,gdi,geospatial,data,exchange
 
 
-homepage=https://catalogue.gsx.org.in/
+homepage=https://catalogue.geospatial.org.in/
 category=Plugins
 icon=gdi_icon.png
 # experimental flag
