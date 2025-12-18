@@ -69,7 +69,7 @@ class Ui_LoginDialog(object):
     def retranslateUi(self, LoginDialog):
         _translate = QtCore.QCoreApplication.translate
         LoginDialog.setWindowTitle(_translate("LoginDialog", "Login"))
-        self.titleLabel.setText(_translate("LoginDialog", "Login"))
+        self.titleLabel.setText(_translate("LoginDialog", "Login to GDI using your client credentials"))
         self.label_client_id.setText(_translate("LoginDialog", "Client ID:"))
         self.label_client_secret.setText(_translate("LoginDialog", "Client Secret:"))
         self.pushButton_login.setText(_translate("LoginDialog", "Login"))

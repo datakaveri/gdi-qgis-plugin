@@ -107,7 +107,7 @@ class Ugix_resources:
 
         # Declare instance attributes
         self.actions = []
-        self.menu = self.tr(u'&Ugix_resources')
+        self.menu = self.tr(u'&GDI QGIS Plugin')
 
         self.first_start = None
 
@@ -147,7 +147,7 @@ class Ugix_resources:
         :returns: Translated version of message.
         :rtype: QString
         """
-        return QCoreApplication.translate('Ugix_resources', message)
+        return QCoreApplication.translate('GDI QGIS Plugin', message)
 
     def fetch_api_data(self, url):
         try:
@@ -810,10 +810,12 @@ class Ugix_resources:
     def initGui(self):
         """Create the menu entries and toolbar icons inside the QGIS GUI."""
 
-        icon_path = ':/plugins/Ugix_resources/icon.png'
+        plugin_dir = os.path.dirname(__file__)
+
+        icon_path = os.path.join(plugin_dir, 'gdi_plugin_icon.png')
         self.add_action(
             icon_path,
-            text=self.tr(u'Ugix_resources'),
+            text=self.tr(u'GDI QGIS Plugin'),
             callback=self.run,
             parent=self.iface.mainWindow())
 
@@ -827,7 +829,7 @@ class Ugix_resources:
         """Removes the plugin menu item and icon from QGIS GUI."""
         for action in self.actions:
             self.iface.removePluginMenu(
-                self.tr(u'&Ugix_resources'),
+                self.tr(u'&GDI QGIS Plugin'),
                 action)
             self.iface.removeToolBarIcon(action)
 
@@ -852,7 +854,7 @@ class Ugix_resources:
             self.client_secret = self.login_dialog.client_secret
             
             # Create and show a QProgressDialog
-            progress_dialog = QProgressDialog("Logging into your Ugix account, please wait...", None, 0, 0)
+            progress_dialog = QProgressDialog("Logging into your GDI account, please wait...", None, 0, 0)
             progress_dialog.setWindowTitle("Loading")
             progress_dialog.setWindowModality(Qt.ApplicationModal)
             progress_dialog.setMinimumDuration(0)  # Ensure the dialog appears immediately
