@@ -711,8 +711,7 @@ class Ugix_resources:
     
             feature = QgsFeature()
             feature.setGeometry(geom)
-            
-            attributes = [properties.get(key, 'No data available') for key in property_keys]
+            attributes = [feature_data.get('properties', {}).get(key, 'No data available') for key in property_keys]
             feature.setAttributes(attributes)
             
             features.append(feature)
@@ -870,7 +869,7 @@ class Ugix_resources:
                 QApplication.processEvents()
 
             # Fetch data from the API immediately after successful login
-            url = 'https://dx.geospatial.org.in/dx/cat/v1/search?property=[type]&value=[[iudx:Resource]]'
+            url = 'https://dx.geospatial.org.in/dx/cat/v1/search?property=[type]&value=[[iudx:Resource]]&filter=[id,label,accessPolicy]'
             data = self.fetch_api_data(url)
 
 
