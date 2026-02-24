@@ -50,6 +50,16 @@ from qgis.PyQt.QtCore import Qt
 from qgis.core import QgsPointXY, QgsFeature
 from PyQt5.QtWidgets import QMessageBox
 from qgis.core import QgsMarkerSymbol, QgsSvgMarkerSymbolLayer
+from qgis.PyQt.QtWidgets import QDialog, QPushButton, QVBoxLayout
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit, QPushButton
+from qgis.gui import QgsMapToolExtent
+from qgis.core import (
+    QgsRectangle,
+    QgsCoordinateTransform,
+    QgsCoordinateReferenceSystem,
+    QgsProject,
+)
+
 
 class MapToolIdentifyFeature(QgsMapToolIdentifyFeature):
     def __init__(self, canvas, iface):
@@ -73,8 +83,146 @@ class MapToolIdentifyFeature(QgsMapToolIdentifyFeature):
             
             # Show formatted feature attributes in a message box
             QMessageBox.information(None, "Feature Attributes", formatted_attrs)
+            
+
+class BBoxMapTool(QgsMapToolExtent):
+    def __init__(self, canvas, callback):
+        super().__init__(canvas)
+        self.canvas = canvas
+        self.callback = callback
+        self._used = False  # 🔒 prevent double trigger
+
+        self.extentChanged.connect(self.on_extent_changed)
+
+    def on_extent_changed(self, rectangle: QgsRectangle):
+        # QgsMapToolExtent can emit more than once
+        if self._used or rectangle.isEmpty():
+            return
+
+        self._used = True
+
+        # Convert to EPSG:4326 (API expects lon/lat)
+        source_crs = self.canvas.mapSettings().destinationCrs()
+        target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+
+        transform = QgsCoordinateTransform(
+            source_crs,
+            target_crs,
+            QgsProject.instance()
+        )
+
+        rect_4326 = transform.transformBoundingBox(rectangle)
+
+        minx = rect_4326.xMinimum()
+        miny = rect_4326.yMinimum()
+        maxx = rect_4326.xMaximum()
+        maxy = rect_4326.yMaximum()
+
+        # cleanup safely
+        self.extentChanged.disconnect(self.on_extent_changed)
+        self.canvas.unsetMapTool(self)
+
+        self.callback(minx, miny, maxx, maxy)
 
 
+
+class FetchModeDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Fetch Mode")
+        self.setFixedSize(250, 150)
+
+        self.mode = None
+
+        layout = QVBoxLayout(self)
+
+        btn_all = QPushButton("Get All")
+        btn_bbox = QPushButton("BBox Search")
+        btn_attr = QPushButton("Attribute Filter")
+
+        layout.addWidget(btn_all)
+        layout.addWidget(btn_bbox)
+        layout.addWidget(btn_attr)
+
+        btn_all.clicked.connect(lambda: self._select("ALL"))
+        btn_bbox.clicked.connect(lambda: self._select("BBOX"))
+        btn_attr.clicked.connect(lambda: self._select("ATTR"))
+
+    def _select(self, mode):
+        self.mode = mode
+        self.accept()
+
+
+class AttributeFilterDialog(QDialog):
+    def __init__(self, item_id, filterable_keys, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Attribute Filter")
+        self.setMinimumWidth(400)
+
+        self.filterable_keys = filterable_keys
+        self.rows = []
+
+        main_layout = QVBoxLayout(self)
+
+        info_lbl = QLabel("Select attribute(s) and enter value(s):")
+        main_layout.addWidget(info_lbl)
+
+        self.rows_layout = QVBoxLayout()
+        main_layout.addLayout(self.rows_layout)
+
+        # add first row by default
+        self._add_filter_row()
+
+        add_btn = QPushButton("➕ Add Filter")
+        add_btn.clicked.connect(self._add_filter_row)
+        main_layout.addWidget(add_btn)
+
+        # buttons
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+
+        main_layout.addLayout(btn_layout)
+
+    def _add_filter_row(self):
+        row_layout = QHBoxLayout()
+
+        key_combo = QComboBox()
+        key_combo.addItems(self.filterable_keys)
+
+        value_edit = QLineEdit()
+        value_edit.setPlaceholderText("Enter value")
+
+        row_layout.addWidget(key_combo)
+        row_layout.addWidget(value_edit)
+
+        self.rows_layout.addLayout(row_layout)
+        self.rows.append((key_combo, value_edit))
+
+    def get_selected_filters(self):
+        """
+        Returns dict of filters:
+        { key1: value1, key2: value2 }
+        """
+        filters = {}
+
+        for key_combo, value_edit in self.rows:
+            key = key_combo.currentText()
+            value = value_edit.text().strip()
+
+            if not value:
+                continue
+
+            filters[key] = value
+
+        return filters
             
 class Ugix_resources:
     """QGIS Plugin Implementation."""
@@ -88,6 +236,7 @@ class Ugix_resources:
 
         self.plugin_dir = os.path.dirname(__file__)
         self.icon_path = os.path.join(self.plugin_dir, 'gdi_plugin_icon.png')
+        
         # self.marker_path = os.path.join(self.plugin_dir, 'generic_marker.png')
 
         self.access_token = None  # Initialize access token
@@ -120,6 +269,8 @@ class Ugix_resources:
         self.dlg.radioButtonAll.toggled.connect(self.filter_data)
         self.dlg.radioButtonPublic.toggled.connect(self.filter_data)
         self.dlg.radioButtonPrivate.toggled.connect(self.filter_data)
+        
+        self.dlg.btnSearch.clicked.connect(self.on_search_clicked)
 
     def activate_map_tool(self):
         self.canvas.setMapTool(self.map_tool_identify_feature)
@@ -160,6 +311,220 @@ class Ugix_resources:
             QMessageBox.critical(None, 'Error', f'Failed to fetch data from API: {e}')
             return None
 
+    def on_search_clicked(self):
+        self.filter_data()
+        
+    def start_bbox_selection(self, item_data):
+        item_id = item_data.get('id')
+
+        self.item_id = item_id
+        self.item_data = item_data
+
+        self.bbox_tool = QgsMapToolExtent(self.iface.mapCanvas())
+        self.bbox_tool.extentChanged.connect(self.on_bbox_selected)
+
+        self.iface.mapCanvas().setMapTool(self.bbox_tool)
+
+    def on_bbox_selected(self, extent):
+        self.iface.mapCanvas().unsetMapTool(self.bbox_tool)
+
+        source_crs = self.canvas.mapSettings().destinationCrs()
+        target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+
+        transform = QgsCoordinateTransform(
+            source_crs, target_crs, QgsProject.instance()
+        )
+
+        rect = transform.transformBoundingBox(extent)
+
+        self.bbox = (
+            f"{rect.xMinimum()},"
+            f"{rect.yMinimum()},"
+            f"{rect.xMaximum()},"
+            f"{rect.yMaximum()}"
+        )
+        self.fetch_with_bbox()
+
+
+    def fetch_with_bbox(self):
+        offset = 1
+        all_features = []
+        
+        
+        progress_dialog = QProgressDialog("Fetching and processing data, please wait...", "Cancel", 0, 100)
+        self.progress_dialog = progress_dialog
+        progress_dialog.setWindowTitle("Loading")
+        progress_dialog.setWindowModality(Qt.ApplicationModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        progress_dialog.setStyleSheet("QLabel { color : black; }")
+        progress_dialog.show()
+
+        QApplication.processEvents()
+
+        while True:
+            url = f"https://geoserver.dx.geospatial.org.in/collections/{self.item_id}/items"
+            params = {
+                "bbox": self.bbox,
+                "limit": 1000,
+                "offset": offset
+            }
+
+            headers = {"Content-Type": "application/json"}
+            if self.access_token:
+                headers["Authorization"] = f"Bearer {self.access_token}"
+
+            try:
+                response = requests.get(url, params=params, headers=headers, timeout=15)
+                response.raise_for_status()
+                data = response.json()
+            except requests.RequestException as e:
+                QMessageBox.critical(None, 'Error', f'Failed to fetch data from API: {e}')
+                return
+
+            features = data.get("features", [])
+            all_features.extend(features)
+
+            number_returned = data.get("numberReturned", 0)
+            number_matched = data.get("numberMatched", 0)
+            offset += number_returned
+
+            if offset >= number_matched:
+                break
+
+        if not all_features:
+            QMessageBox.information(None, 'Info', 'No features found for the selected item.')
+            return
+
+        self.all_features = all_features
+        item_data = self.item_data
+        self.plot_features(all_features, item_data)
+
+
+    def plot_features(self, all_features, item_data):
+        
+        
+        first_feature_geometry = all_features[0]['geometry']
+        geometry_type = first_feature_geometry['type']
+
+        crs = QgsProject.instance().crs()
+        layer_name = item_data.get('label', 'Unnamed Layer')
+        vector_layer = QgsVectorLayer(
+            f"{geometry_type}?crs={crs.authid()}",
+            layer_name,
+            "memory"
+        )
+
+        provider = vector_layer.dataProvider()
+        fields = QgsFields()
+
+        property_keys = set()
+        for feature_data in all_features:
+            properties = feature_data.get('properties', {})
+            property_keys.update(properties.keys())
+
+        for key in property_keys:
+            fields.append(QgsField(key, QVariant.String))
+
+        provider.addAttributes(fields)
+        vector_layer.updateFields()
+
+        features = []
+
+        source_crs = QgsCoordinateReferenceSystem('EPSG:4326')
+        target_crs = crs
+        transform_context = QgsProject.instance().transformContext()
+        coord_transform = QgsCoordinateTransform(
+            source_crs,
+            target_crs,
+            transform_context
+        )
+
+        for feature_data in all_features:
+            geometry = feature_data.get('geometry')
+            if geometry is None:
+                continue
+
+            coords = geometry.get('coordinates')
+            geom_type = geometry.get('type')
+
+            if geom_type == 'Point':
+                if isinstance(coords, list) and len(coords) >= 2:
+                    point = QgsPointXY(coords[0], coords[1])
+                    transformed_point = coord_transform.transform(point)
+                    geom = QgsGeometry.fromPointXY(transformed_point)
+                else:
+                    continue
+
+            elif geom_type == 'LineString':
+                polyline = [QgsPointXY(coord[0], coord[1]) for coord in coords]
+                transformed_polyline = [
+                    coord_transform.transform(point) for point in polyline
+                ]
+                geom = QgsGeometry.fromPolylineXY(transformed_polyline)
+
+            elif geom_type == 'Polygon':
+                polygon = [QgsPointXY(coord[0], coord[1]) for coord in coords[0]]
+                transformed_polygon = [
+                    coord_transform.transform(point) for point in polygon
+                ]
+                geom = QgsGeometry.fromPolygonXY([transformed_polygon])
+
+            elif geom_type == 'MultiPoint':
+                multipoint = [QgsPointXY(coord[0], coord[1]) for coord in coords]
+                transformed_multipoint = [
+                    coord_transform.transform(point) for point in multipoint
+                ]
+                geom = QgsGeometry.fromMultiPointXY(transformed_multipoint)
+
+            elif geom_type == 'MultiLineString':
+                multilinestring = [
+                    [QgsPointXY(coord[0], coord[1]) for coord in line]
+                    for line in coords
+                ]
+                transformed_multilinestring = [
+                    [coord_transform.transform(point) for point in line]
+                    for line in multilinestring
+                ]
+                geom = QgsGeometry.fromMultiPolylineXY(transformed_multilinestring)
+
+            elif geom_type == 'MultiPolygon':
+                multipolygon = [
+                    [QgsPointXY(coord[0], coord[1]) for coord in ring]
+                    for ring in coords[0]
+                ]
+                transformed_multipolygon = [
+                    [coord_transform.transform(point) for point in ring]
+                    for ring in multipolygon
+                ]
+                geom = QgsGeometry.fromMultiPolygonXY([transformed_multipolygon])
+
+            else:
+                continue
+
+            feature = QgsFeature()
+            feature.setGeometry(geom)
+
+            attributes = [
+                feature_data.get('properties', {}).get(key, 'No data available')
+                for key in property_keys
+            ]
+            feature.setAttributes(attributes)
+
+            features.append(feature)
+
+        provider.addFeatures(features)
+        vector_layer.updateExtents()
+        QgsProject.instance().addMapLayer(vector_layer)
+
+        extent = vector_layer.extent()
+        self.iface.mapCanvas().setExtent(extent)
+        self.iface.mapCanvas().refresh()
+        progress_dialog = self.progress_dialog
+        progress_dialog.setValue(100)
+        progress_dialog.close()
+        QMessageBox.information(None, 'Info', 'Data successfully loaded and displayed.')
+
 
     def filter_data(self):
         if not self.dlg:
@@ -168,22 +533,30 @@ class Ugix_resources:
         list_widget = self.dlg.listWidget
         list_widget.clear()
 
-        # Determine the selected radio button
+        search_text = self.dlg.lineEdit.text().strip().lower()
+
         if self.dlg.radioButtonPublic.isChecked():
             filtered_data = [item for item in self.all_data if item.get('accessPolicy') == 'OPEN']
         elif self.dlg.radioButtonPrivate.isChecked():
             filtered_data = [item for item in self.all_data if item.get('accessPolicy') == 'SECURE']
         else:
-            filtered_data = self.all_data  # Show all data if 'All' is selected
+            filtered_data = self.all_data
 
-        # Extract labels and sort them
-        sorted_data = sorted(filtered_data, key=lambda item: item.get('label', 'No label available'))
+        if search_text:
+            filtered_data = [
+                item for item in filtered_data
+                if search_text in item.get('label', '').lower()
+            ]
+
+        sorted_data = sorted(filtered_data, key=lambda item: item.get('label', ''))
 
         for item in sorted_data:
             label_text = item.get('label', 'No label available')
-            access_policy = item.get('accessPolicy', 'Unknown')  # Fetch access policy
+            access_policy = item.get('accessPolicy', 'Unknown')
+            ogc_resource_info = item.get("ogcResourceInfo") or {}
+            ogc_resource_apis = ogc_resource_info.get("ogcResourceAPIs") or []
+            ogc_resource = ogc_resource_apis[0] if ogc_resource_apis else None
 
-            # Determine the background color based on access policy
             if access_policy == 'OPEN':
                 access_policy_text = 'Public'
                 access_policy_color = 'green'
@@ -194,48 +567,51 @@ class Ugix_resources:
                 access_policy_text = access_policy
                 access_policy_color = 'black'
 
-            # Create a QWidget to hold the label and the colored box
             item_widget = QWidget()
             layout = QHBoxLayout(item_widget)
             layout.setContentsMargins(10, 20, 10, 20)
             layout.setSpacing(20)
 
-            # Create the label
             label = QLabel(label_text)
-            label.setFixedWidth(200)  # Set a fixed width for the label
+            label.setFixedWidth(200)
             label.setWordWrap(True)
 
-            # Create the colored box
             color_box = QWidget()
-            color_box.setFixedSize(60, 20)  # Set a fixed size for the colored box
+            color_box.setFixedSize(60, 20)
             color_box.setStyleSheet(f"background-color: {access_policy_color};")
 
-            # Create the text label inside the colored box
             text_label = QLabel(access_policy_text)
             text_label.setAlignment(Qt.AlignCenter)
             text_label.setStyleSheet("color: white;")
 
-            # Use a layout for the color box to center the text
             color_box_layout = QVBoxLayout(color_box)
             color_box_layout.setContentsMargins(0, 0, 0, 0)
             color_box_layout.addWidget(text_label)
+            
+            ogc_box = QWidget()
+            ogc_box.setFixedSize(60, 20)
+            ogc_box.setStyleSheet("background-color: yellow; border-radius: 4px;")
 
-            # Add the label and colored box to the layout
+            ogc_label = QLabel(ogc_resource)
+            ogc_label.setAlignment(Qt.AlignCenter)
+            ogc_label.setStyleSheet("color: black; font-size: 10px;")
+
+            ogc_box_layout = QVBoxLayout(ogc_box)
+            ogc_box_layout.setContentsMargins(0, 0, 0, 0)
+            ogc_box_layout.addWidget(ogc_label)
+            
             layout.addWidget(label)
             layout.addWidget(color_box)
+            layout.addWidget(ogc_box)
 
-            # Create a QListWidgetItem and set the widget
             list_item = QListWidgetItem()
-            list_item.setSizeHint(item_widget.sizeHint())  # Ensure the size hint is set
+            list_item.setSizeHint(item_widget.sizeHint())
             list_widget.addItem(list_item)
             list_widget.setItemWidget(list_item, item_widget)
 
-            # Store the item data
-            list_item.setData(Qt.UserRole + 1, item)  # Ensure proper data setting
+            list_item.setData(Qt.UserRole + 1, item)
 
-        # Connect item selection event to a handler
         list_widget.itemSelectionChanged.connect(self.save_selected_item_id)
-
 
 
     def save_selected_item_id(self):
@@ -404,13 +780,12 @@ class Ugix_resources:
         QgsProject.instance().addMapLayer(layer)
 
 
-
-
-
     def on_ok_clicked(self):
         if not self.access_token:
             QMessageBox.warning(None, 'Warning', 'Access token not available. Please log in first.')
             return
+        # --- NEW: show fetch mode dialog ---
+    # --- show fetch mode dialog ---
 
         # # Display the access token in a popup
         # QMessageBox.information(None, 'Access Token', f"Access Token: {self.access_token}")
@@ -424,11 +799,71 @@ class Ugix_resources:
         if selected_item is None:
             QMessageBox.warning(None, 'Warning', 'No item selected.')
             return
-
+        
         item_data = selected_item.data(Qt.UserRole + 1)
-        if item_data is None:
-            QMessageBox.warning(None, 'Warning', 'No valid data available for the selected item.')
+
+        
+        item_id = item_data.get('id')
+        if not item_id:
+            QMessageBox.warning(None, 'Warning', 'No ID available.')
             return
+
+        url = f"https://dx.geospatial.org.in/dx/cat/v1/search?property=[id]&value=[[{item_id}]]&filter=[dataDescriptor]"
+
+        try:
+            req = requests.get(url, timeout=15)
+            req.raise_for_status()
+            item_result = req.json()
+        except Exception as e:
+            QMessageBox.critical(None, 'Error', f'Failed to fetch catalog data:\n{e}')
+            return
+
+        results = item_result.get("results", [])
+
+        # 🔹 CHECK dataDescriptor
+        if not results or "dataDescriptor" not in results[0]:
+            QMessageBox.information(
+                None,
+                'Info',
+                'No Data Descriptor found for this item.'
+            )
+            return
+
+        data_descriptor = results[0]["dataDescriptor"]
+
+        mode_dialog = FetchModeDialog(self.iface.mainWindow())
+        if mode_dialog.exec_() != QDialog.Accepted:
+            return
+
+        fetch_mode = mode_dialog.mode
+        attribute_filter = None 
+
+        if fetch_mode == "BBOX":
+            self.start_bbox_selection(item_data)
+            return 
+            
+        elif fetch_mode == "ATTR":
+            EXCLUDE_KEYS = [
+                '@context', 'type', 'dataDescriptorLabel', 
+                'description', 'geometry', 'observationDateTime'
+            ]
+            filterable_keys = [k for k in data_descriptor.keys() if k not in EXCLUDE_KEYS]
+
+            if not filterable_keys:
+                QMessageBox.information(None, "Info", "No filterable attributes found.")
+                return
+
+            attr_dialog = AttributeFilterDialog(item_id, filterable_keys, self.iface.mainWindow())
+            if attr_dialog.exec_() != QDialog.Accepted:
+                return
+
+            attribute_filter = attr_dialog.get_selected_filters()
+
+            if not attribute_filter:
+                QMessageBox.warning(None, "Warning", "No attribute filters provided.")
+                return
+
+            print("Selected attribute filters:", attribute_filter)
 
         access_policy = item_data.get('accessPolicy', 'Unknown')
         # if access_policy == 'SECURE':
@@ -570,6 +1005,7 @@ class Ugix_resources:
             return
 
         progress_dialog = QProgressDialog("Fetching and processing data, please wait...", "Cancel", 0, 100)
+        self.progress_dialog = progress_dialog
         progress_dialog.setWindowTitle("Loading")
         progress_dialog.setWindowModality(Qt.ApplicationModal)
         progress_dialog.setMinimumDuration(0)
@@ -584,8 +1020,21 @@ class Ugix_resources:
 
         try:
             while True:
-                url = f'https://geoserver.dx.geospatial.org.in/collections/{item_id}/items'
-                params = {'offset': offset}
+                
+                if fetch_mode == "ATTR":
+                    
+                    url = f'https://geoserver.dx.geospatial.org.in/collections/{item_id}/items'
+                    params = {
+                        'offset': offset
+                    }
+                    params.update(attribute_filter)
+
+                else:
+                    url = f'https://geoserver.dx.geospatial.org.in/collections/{item_id}/items'
+                    params = {
+                        'offset': offset
+                    }
+                
                 headers = {
                     'Content-Type': 'application/json'
                 }
@@ -600,7 +1049,7 @@ class Ugix_resources:
                 response.raise_for_status()
 
                 response_data = response.json()
-
+                
                 features = response_data.get('features', [])
                 all_features.extend(features)
 
@@ -619,9 +1068,6 @@ class Ugix_resources:
                 if offset >= number_matched:
                     break
 
-                
-
-
 
         except requests.RequestException as e:
             progress_dialog.close()
@@ -635,99 +1081,101 @@ class Ugix_resources:
             progress_dialog.close()
             QMessageBox.information(None, 'Info', 'No features found for the selected item.')
             return
-
-        first_feature_geometry = all_features[0]['geometry']
-        geometry_type = first_feature_geometry['type']
-
-        crs = QgsProject.instance().crs()
-        layer_name = item_data.get('label', 'Unnamed Layer')
-        vector_layer = QgsVectorLayer(f"{geometry_type}?crs={crs.authid()}", layer_name, "memory")
         
-        provider = vector_layer.dataProvider()
-
-        fields = QgsFields()
-
-        property_keys = set()
-        for feature_data in all_features:
-            properties = feature_data.get('properties', {})
-            property_keys.update(properties.keys())
-
-        for key in property_keys:
-            fields.append(QgsField(key, QVariant.String))
-        provider.addAttributes(fields)
-        vector_layer.updateFields()
-
-        features = []
-
-        source_crs = QgsCoordinateReferenceSystem('EPSG:4326')
-        target_crs = crs
-        transform_context = QgsProject.instance().transformContext()
-        coord_transform = QgsCoordinateTransform(source_crs, target_crs, transform_context)
-
-        for feature_data in all_features:
-            geometry = feature_data.get('geometry')  # Use `.get()` to avoid KeyError
-
-            if geometry:  # Check if geometry is not None
-                coords = geometry.get('coordinates')  # Safely get coordinates
-                geom_type = geometry.get('type')  # Safely get type
-
-                if geom_type == 'Point':
-                    if isinstance(coords, list) and len(coords) >= 2:
-                        try:
-                            point = QgsPointXY(coords[0], coords[1])
-                            transformed_point = coord_transform.transform(point)
-                            geom = QgsGeometry.fromPointXY(transformed_point)
-                        except Exception as e:
-                            QMessageBox.warning(None, 'Warning', f"Error processing coordinates: {coords}. Exception: {str(e)}")
-                    else:
-                        # QMessageBox.warning(None, 'Warning', f"Invalid coordinate format: {coords}. Coordinates must contain at least two elements.")
-                        continue
-                elif geom_type == 'LineString':
-                    polyline = [QgsPointXY(coord[0], coord[1]) for coord in coords]
-                    transformed_polyline = [coord_transform.transform(point) for point in polyline]
-                    geom = QgsGeometry.fromPolylineXY(transformed_polyline)
-                elif geom_type == 'Polygon':
-                    polygon = [QgsPointXY(coord[0], coord[1]) for coord in coords[0]]
-                    transformed_polygon = [coord_transform.transform(point) for point in polygon]
-                    geom = QgsGeometry.fromPolygonXY([transformed_polygon])
-                elif geom_type == 'MultiPoint':
-                    multipoint = [QgsPointXY(coord[0], coord[1]) for coord in coords]
-                    transformed_multipoint = [coord_transform.transform(point) for point in multipoint]
-                    geom = QgsGeometry.fromMultiPointXY(transformed_multipoint)
-                elif geom_type == 'MultiLineString':
-                    multilinestring = [[QgsPointXY(coord[0], coord[1]) for coord in line] for line in coords]
-                    transformed_multilinestring = [[coord_transform.transform(point) for point in line] for line in multilinestring]
-                    geom = QgsGeometry.fromMultiPolylineXY(transformed_multilinestring)
-                elif geom_type == 'MultiPolygon':
-                    multipolygon = [[QgsPointXY(coord[0], coord[1]) for coord in ring] for ring in coords[0]]
-                    transformed_multipolygon = [[coord_transform.transform(point) for point in ring] for ring in multipolygon]
-                    geom = QgsGeometry.fromMultiPolygonXY([transformed_multipolygon])
-                else:
-                    # QMessageBox.warning(None, 'Warning', f"Unsupported geometry type: {geom_type}. Skipping feature.")
-                    continue
-            else:
-                # QMessageBox.warning(None, 'Warning', "Feature geometry is missing or invalid.")
-                continue
+        self.plot_features(all_features,item_data)
     
-            feature = QgsFeature()
-            feature.setGeometry(geom)
-            attributes = [feature_data.get('properties', {}).get(key, 'No data available') for key in property_keys]
-            feature.setAttributes(attributes)
-            
-            features.append(feature)
+        # first_feature_geometry = all_features[0]['geometry']
+        # geometry_type = first_feature_geometry['type']
 
-        provider.addFeatures(features)
-        vector_layer.updateExtents()
-        QgsProject.instance().addMapLayer(vector_layer)
+        # crs = QgsProject.instance().crs()
+        # layer_name = item_data.get('label', 'Unnamed Layer')
+        # vector_layer = QgsVectorLayer(f"{geometry_type}?crs={crs.authid()}", layer_name, "memory")
         
-        # Zoom to the extent of the newly added layer
-        extent = vector_layer.extent()
-        self.iface.mapCanvas().setExtent(extent)
-        self.iface.mapCanvas().refresh()
+        # provider = vector_layer.dataProvider()
 
-        progress_dialog.setValue(100)
-        progress_dialog.close()
-        QMessageBox.information(None, 'Info', 'Data successfully loaded and displayed.')
+        # fields = QgsFields()
+
+        # property_keys = set()
+        # for feature_data in all_features:
+        #     properties = feature_data.get('properties', {})
+        #     property_keys.update(properties.keys())
+
+        # for key in property_keys:
+        #     fields.append(QgsField(key, QVariant.String))
+        # provider.addAttributes(fields)
+        # vector_layer.updateFields()
+
+        # features = []
+
+        # source_crs = QgsCoordinateReferenceSystem('EPSG:4326')
+        # target_crs = crs
+        # transform_context = QgsProject.instance().transformContext()
+        # coord_transform = QgsCoordinateTransform(source_crs, target_crs, transform_context)
+
+        # for feature_data in all_features:
+        #     geometry = feature_data.get('geometry')  # Use `.get()` to avoid KeyError
+
+        #     if geometry:  # Check if geometry is not None
+        #         coords = geometry.get('coordinates')  # Safely get coordinates
+        #         geom_type = geometry.get('type')  # Safely get type
+
+        #         if geom_type == 'Point':
+        #             if isinstance(coords, list) and len(coords) >= 2:
+        #                 try:
+        #                     point = QgsPointXY(coords[0], coords[1])
+        #                     transformed_point = coord_transform.transform(point)
+        #                     geom = QgsGeometry.fromPointXY(transformed_point)
+        #                 except Exception as e:
+        #                     QMessageBox.warning(None, 'Warning', f"Error processing coordinates: {coords}. Exception: {str(e)}")
+        #             else:
+        #                 # QMessageBox.warning(None, 'Warning', f"Invalid coordinate format: {coords}. Coordinates must contain at least two elements.")
+        #                 continue
+        #         elif geom_type == 'LineString':
+        #             polyline = [QgsPointXY(coord[0], coord[1]) for coord in coords]
+        #             transformed_polyline = [coord_transform.transform(point) for point in polyline]
+        #             geom = QgsGeometry.fromPolylineXY(transformed_polyline)
+        #         elif geom_type == 'Polygon':
+        #             polygon = [QgsPointXY(coord[0], coord[1]) for coord in coords[0]]
+        #             transformed_polygon = [coord_transform.transform(point) for point in polygon]
+        #             geom = QgsGeometry.fromPolygonXY([transformed_polygon])
+        #         elif geom_type == 'MultiPoint':
+        #             multipoint = [QgsPointXY(coord[0], coord[1]) for coord in coords]
+        #             transformed_multipoint = [coord_transform.transform(point) for point in multipoint]
+        #             geom = QgsGeometry.fromMultiPointXY(transformed_multipoint)
+        #         elif geom_type == 'MultiLineString':
+        #             multilinestring = [[QgsPointXY(coord[0], coord[1]) for coord in line] for line in coords]
+        #             transformed_multilinestring = [[coord_transform.transform(point) for point in line] for line in multilinestring]
+        #             geom = QgsGeometry.fromMultiPolylineXY(transformed_multilinestring)
+        #         elif geom_type == 'MultiPolygon':
+        #             multipolygon = [[QgsPointXY(coord[0], coord[1]) for coord in ring] for ring in coords[0]]
+        #             transformed_multipolygon = [[coord_transform.transform(point) for point in ring] for ring in multipolygon]
+        #             geom = QgsGeometry.fromMultiPolygonXY([transformed_multipolygon])
+        #         else:
+        #             # QMessageBox.warning(None, 'Warning', f"Unsupported geometry type: {geom_type}. Skipping feature.")
+        #             continue
+        #     else:
+        #         # QMessageBox.warning(None, 'Warning', "Feature geometry is missing or invalid.")
+        #         continue
+    
+        #     feature = QgsFeature()
+        #     feature.setGeometry(geom)
+        #     attributes = [feature_data.get('properties', {}).get(key, 'No data available') for key in property_keys]
+        #     feature.setAttributes(attributes)
+            
+        #     features.append(feature)
+
+        # provider.addFeatures(features)
+        # vector_layer.updateExtents()
+        # QgsProject.instance().addMapLayer(vector_layer)
+        
+        # # Zoom to the extent of the newly added layer
+        # extent = vector_layer.extent()
+        # self.iface.mapCanvas().setExtent(extent)
+        # self.iface.mapCanvas().refresh()
+
+        # progress_dialog.setValue(100)
+        # progress_dialog.close()
+        # QMessageBox.information(None, 'Info', 'Data successfully loaded and displayed.')
 
 
 
@@ -869,7 +1317,7 @@ class Ugix_resources:
                 QApplication.processEvents()
 
             # Fetch data from the API immediately after successful login
-            url = 'https://dx.geospatial.org.in/dx/cat/v1/search?property=[type]&value=[[iudx:Resource]]&filter=[id,label,accessPolicy]'
+            url = 'https://dx.geospatial.org.in/dx/cat/v1/search?property=[type]&value=[[iudx:Resource]]&filter=[id,label,accessPolicy,resourceGroup,ogcResourceInfo]'
             data = self.fetch_api_data(url)
 
 
@@ -890,5 +1338,3 @@ class Ugix_resources:
             self.dlg.okButton.clicked.connect(self.on_ok_clicked)
 
             self.dlg.show()
-
-
