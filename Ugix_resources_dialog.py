@@ -49,23 +49,46 @@ class Ugix_resourcesDialog(QtWidgets.QDialog, FORM_CLASS):
         # Update the widget name if it's different
         self.radioButtonPublic.toggled.connect(self.filter_data)
         
+        self.radioApiStac.toggled.connect(self.filter_data)
+        self.radioApiFeatures.toggled.connect(self.filter_data)
         # Store the original data to be filtered
         self.original_data = []
 
     def filter_data(self):
-        """Filter data based on the selected radio button."""
+        """Filter data based on selected filters."""
+
         if not self.original_data:
-            return  # No data to filter
-        
-        # Determine which radio button is selected
-        if self.radioButtonAll.isChecked():
-            filtered_data = self.original_data
-        elif self.radioButtonPublic.isChecked():
-            filtered_data = [item for item in self.original_data if item.get('accessPolicy') == 'OPEN']
+            return
+
+        filtered_data = self.original_data
+
+        # -------- Access Policy Filter --------
+        if self.radioButtonPublic.isChecked():
+            filtered_data = [
+                item for item in filtered_data
+                if item.get("accessPolicy") == "OPEN"
+            ]
+
         elif self.radioButtonPrivate.isChecked():
-            filtered_data = [item for item in self.original_data if item.get('accessPolicy') == 'SECURE']
-        else:
-            filtered_data = []
-        
-        # Update the display with the filtered data
+            filtered_data = [
+                item for item in filtered_data
+                if item.get("accessPolicy") == "SECURE"
+            ]
+
+        # -------- API Type Filter --------
+        if self.radioApiStac.isChecked():
+            
+            filtered_data = [
+                item for item in filtered_data
+                if "STAC" in (item.get("ogcResourceInfo", {}).get("ogcResourceAPIs") or [])
+            ]
+
+        elif self.radioApiFeatures.isChecked():
+
+            filtered_data = [
+                item for item in filtered_data
+                if "FEATURES" in (item.get("ogcResourceInfo", {}).get("ogcResourceAPIs") or [])
+            ]
+
+        # -------- Update UI --------
         self.display_data_in_scroll_area(filtered_data)
