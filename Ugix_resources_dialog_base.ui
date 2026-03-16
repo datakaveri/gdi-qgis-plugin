@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>Ugix_resourcesDialogBase</class>
+
  <widget class="QDialog" name="Ugix_resourcesDialogBase">
   <property name="geometry">
    <rect>
@@ -45,7 +46,7 @@
    </property>
   </widget>
 
-  <!-- Radio Buttons (Centered) -->
+  <!-- Access Filter -->
   <widget class="QRadioButton" name="radioButtonAll">
    <property name="geometry">
     <rect>
@@ -88,24 +89,53 @@
    </property>
   </widget>
 
+  <!-- Dataset Type -->
+  <widget class="QRadioButton" name="radioApiStac">
+   <property name="geometry">
+    <rect>
+     <x>210</x>
+     <y>80</y>
+     <width>70</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>STAC</string>
+   </property>
+  </widget>
+
+  <widget class="QRadioButton" name="radioApiFeatures">
+   <property name="geometry">
+    <rect>
+     <x>290</x>
+     <y>80</y>
+     <width>90</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Features</string>
+   </property>
+  </widget>
+
   <!-- Results List -->
   <widget class="QListWidget" name="listWidget">
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>90</y>
+     <y>120</y>
      <width>500</width>
-     <height>320</height>
+     <height>290</height>
     </rect>
    </property>
   </widget>
 
-  <!-- Fetch Button -->
+  <!-- Add Button -->
   <widget class="QPushButton" name="okButton">
    <property name="geometry">
     <rect>
      <x>220</x>
-     <y>440</y>
+     <y>430</y>
      <width>80</width>
      <height>24</height>
     </rect>
@@ -116,6 +146,8 @@
   </widget>
 
  </widget>
+
  <resources/>
  <connections/>
+
 </ui>

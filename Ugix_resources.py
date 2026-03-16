@@ -36,7 +36,7 @@ from PyQt5.QtWidgets import (
     QMessageBox
 )
 
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt, QVariant
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt, QVariant, QMetaType
 from qgis.PyQt.QtGui import QIcon, QCursor
 from qgis.PyQt.QtWidgets import QAction
 
@@ -81,6 +81,7 @@ import os
 import tempfile
 import requests
 from datetime import datetime
+
 class MapToolIdentifyFeature(QgsMapToolIdentifyFeature):
     def __init__(self, canvas, iface):
         super().__init__(canvas)
@@ -584,6 +585,8 @@ class Ugix_resources:
         self.dlg.radioButtonPublic.toggled.connect(self.filter_data)
         self.dlg.radioButtonPrivate.toggled.connect(self.filter_data)
         
+        self.dlg.radioApiStac.toggled.connect(self.filter_data)
+        self.dlg.radioApiFeatures.toggled.connect(self.filter_data)
         self.dlg.btnSearch.clicked.connect(self.on_search_clicked)
 
     def activate_map_tool(self):
@@ -858,92 +861,107 @@ class Ugix_resources:
 
 
     def filter_data(self):
-        if not self.dlg:
+        
+        if not self.dlg or not self.all_data:
             return
 
         list_widget = self.dlg.listWidget
+
+        list_widget.setUpdatesEnabled(False)
+        list_widget.blockSignals(True)
         list_widget.clear()
 
         search_text = self.dlg.lineEdit.text().strip().lower()
 
-        if self.dlg.radioButtonPublic.isChecked():
-            filtered_data = [item for item in self.all_data if item.get('accessPolicy') == 'OPEN']
-        elif self.dlg.radioButtonPrivate.isChecked():
-            filtered_data = [item for item in self.all_data if item.get('accessPolicy') == 'SECURE']
-        else:
-            filtered_data = self.all_data
+        data = self.all_data
 
-        if search_text:
-            filtered_data = [
-                item for item in filtered_data
-                if search_text in item.get('label', '').lower()
+        # -------- Access Policy Filter --------
+        if self.dlg.radioButtonPublic.isChecked():
+            data = [i for i in data if i.get("accessPolicy") == "OPEN"]
+
+        elif self.dlg.radioButtonPrivate.isChecked():
+            data = [i for i in data if i.get("accessPolicy") == "SECURE"]
+
+        # -------- API Type Filter --------
+        if self.dlg.radioApiStac.isChecked():
+            data = [
+                i for i in data
+                if "STAC" in i.get("ogcResourceInfo", {}).get("ogcResourceAPIs", [])
             ]
 
-        sorted_data = sorted(filtered_data, key=lambda item: item.get('label', ''))
+        elif self.dlg.radioApiFeatures.isChecked():
+            data = [
+                i for i in data
+                if "FEATURES" in i.get("ogcResourceInfo", {}).get("ogcResourceAPIs", [])
+            ]
 
-        for item in sorted_data:
-            label_text = item.get('label', 'No label available')
-            access_policy = item.get('accessPolicy', 'Unknown')
-            ogc_resource_info = item.get("ogcResourceInfo") or {}
-            ogc_resource_apis = ogc_resource_info.get("ogcResourceAPIs") or []
-            ogc_resource = ogc_resource_apis[0] if ogc_resource_apis else None
+        # -------- Search Filter --------
+        if search_text:
+            data = [
+                i for i in data
+                if search_text in i.get("label", "").lower()
+            ]
 
-            if access_policy == 'OPEN':
-                access_policy_text = 'Public'
-                access_policy_color = 'green'
-            elif access_policy == 'SECURE':
-                access_policy_text = 'Private'
-                access_policy_color = 'red'
+        # -------- Sort --------
+        data.sort(key=lambda x: x.get("label", ""))
+
+        # -------- Populate List --------
+        for item in data:
+
+            label_text = item.get("label", "No label available")
+            access_policy = item.get("accessPolicy", "Unknown")
+
+            ogc_info = item.get("ogcResourceInfo", {})
+            apis = ogc_info.get("ogcResourceAPIs", [])
+            ogc_resource = apis[0] if apis else ""
+
+            if access_policy == "OPEN":
+                access_text = "Public"
+                access_color = "green"
+            elif access_policy == "SECURE":
+                access_text = "Private"
+                access_color = "red"
             else:
-                access_policy_text = access_policy
-                access_policy_color = 'black'
+                access_text = access_policy
+                access_color = "gray"
 
             item_widget = QWidget()
             layout = QHBoxLayout(item_widget)
-            layout.setContentsMargins(10, 20, 10, 20)
-            layout.setSpacing(20)
+            layout.setContentsMargins(6, 6, 6, 6)
+            layout.setSpacing(15)
 
             label = QLabel(label_text)
-            label.setFixedWidth(200)
+            label.setFixedWidth(220)
             label.setWordWrap(True)
 
-            color_box = QWidget()
-            color_box.setFixedSize(60, 20)
-            color_box.setStyleSheet(f"background-color: {access_policy_color};")
+            access_box = QLabel(access_text)
+            access_box.setAlignment(Qt.AlignCenter)
+            access_box.setFixedSize(60, 20)
+            access_box.setStyleSheet(
+                f"background:{access_color}; color:white;"
+            )
 
-            text_label = QLabel(access_policy_text)
-            text_label.setAlignment(Qt.AlignCenter)
-            text_label.setStyleSheet("color: white;")
+            ogc_box = QLabel(ogc_resource)
+            ogc_box.setAlignment(Qt.AlignCenter)
+            ogc_box.setFixedSize(70, 20)
+            ogc_box.setStyleSheet(
+                "background:yellow; color:black; font-size:10px;"
+            )
 
-            color_box_layout = QVBoxLayout(color_box)
-            color_box_layout.setContentsMargins(0, 0, 0, 0)
-            color_box_layout.addWidget(text_label)
-            
-            ogc_box = QWidget()
-            ogc_box.setFixedSize(60, 20)
-            ogc_box.setStyleSheet("background-color: yellow; border-radius: 4px;")
-
-            ogc_label = QLabel(ogc_resource)
-            ogc_label.setAlignment(Qt.AlignCenter)
-            ogc_label.setStyleSheet("color: black; font-size: 10px;")
-
-            ogc_box_layout = QVBoxLayout(ogc_box)
-            ogc_box_layout.setContentsMargins(0, 0, 0, 0)
-            ogc_box_layout.addWidget(ogc_label)
-            
             layout.addWidget(label)
-            layout.addWidget(color_box)
+            layout.addWidget(access_box)
             layout.addWidget(ogc_box)
 
             list_item = QListWidgetItem()
             list_item.setSizeHint(item_widget.sizeHint())
+
             list_widget.addItem(list_item)
             list_widget.setItemWidget(list_item, item_widget)
 
             list_item.setData(Qt.UserRole + 1, item)
 
-        list_widget.itemSelectionChanged.connect(self.save_selected_item_id)
-
+        list_widget.blockSignals(False)
+        list_widget.setUpdatesEnabled(True)
 
     def save_selected_item_id(self):
         list_widget = self.dlg.listWidget
