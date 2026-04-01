@@ -305,17 +305,16 @@ class StacItemsDialog(QDialog):
         resource_group = self.item_data.get('resourceGroup', 'Unknown')
         item_id = self.item_data.get('id', 'Unknown')
 
-        # ---------------- SECURE TOKEN ----------------
+            # ---------- SECURE TOKEN ----------
         if access_policy == 'SECURE':
 
             url = f'https://catalogue.geospatial.org.in/dataset/{resource_group}'
 
-            token_url = "https://dx.gsx.org.in/auth/v1/token"
-
+            token_url = 'https://dx.geospatial.org.in/auth/v1/token'
             token_headers = {
-                "clientId": self.client_id,
-                "clientSecret": self.client_secret,
-                "Content-Type": "application/json"
+                'clientId': self.client_id,
+                'clientSecret': self.client_secret,
+                'Content-Type': 'application/json'
             }
 
             token_body = {
@@ -325,30 +324,24 @@ class StacItemsDialog(QDialog):
             }
 
             try:
+                token_response = requests.post(token_url, json=token_body, headers=token_headers)
+                token_response.raise_for_status()
+                print("Response : ",token_response)
+                token_data = token_response.json()
+                self.access_token = token_data['results']['accessToken']
+                server_secure = token_data['results']['server']
+                print("Server  : ",server_secure)
 
-                response = requests.post(token_url, json=token_body, headers=token_headers, timeout=20)
-
-                if response.status_code != 200:
-                    raise Exception("Token request failed")
-
-                token_data = response.json()
-
-                self.access_token = token_data.get("results", {}).get("accessToken")
-
-                if not self.access_token:
-                    raise Exception("Token missing")
-
-            except Exception:
-
+            except Exception as e:
+                print("Error : ",e)
                 message_box = QMessageBox()
                 message_box.setIcon(QMessageBox.Information)
-                message_box.setWindowTitle("Private Data")
-                message_box.setText("You do not have access to view this data.")
-                message_box.setInformativeText("Please visit the GDI page to request access.")
+                message_box.setWindowTitle('Private Data')
+                message_box.setText('You do not have access to view this data.')
+                message_box.setInformativeText('Please visit the GDI page to request access.')
 
-                visit_page_button = message_box.addButton("Visit Page", QMessageBox.ActionRole)
+                visit_page_button = message_box.addButton('Visit Page', QMessageBox.ActionRole)
                 message_box.addButton(QMessageBox.Ok)
-
                 message_box.exec_()
 
                 if message_box.clickedButton() == visit_page_button:
@@ -1130,10 +1123,12 @@ class Ugix_resources:
 
 
     def on_ok_clicked(self):
+        
         if not self.access_token:
             QMessageBox.warning(None, 'Warning', 'Access token not available. Please log in first.')
             return
-
+        server = 'geoserver.dx.geospatial.org.in'
+        server_secure = None
         Public_data_access_token = self.access_token
 
         selected_item = self.dlg.listWidget.currentItem()
@@ -1148,7 +1143,7 @@ class Ugix_resources:
             QMessageBox.warning(None, 'Warning', 'No ID available.')
             return
 
-       # ---------------- Check Data Descriptor ----------------
+        # ---------------- Fetch Descriptor ----------------
         descriptor_url = (
             "https://dx.geospatial.org.in/dx/cat/v1/search"
             f"?property=[id]&value=[[{item_id}]]&filter=[dataDescriptor]"
@@ -1163,32 +1158,32 @@ class Ugix_resources:
             return
 
         results = item_result.get("results", [])
+        if not results:
+            QMessageBox.warning(None, "Warning", "No descriptor data found.")
+            return
+
         ogc_resource_info = item_data.get("ogcResourceInfo") or {}
         ogc_resource_apis = ogc_resource_info.get("ogcResourceAPIs") or []
         ogc_resource = ogc_resource_apis[0] if ogc_resource_apis else None
+
         access_policy = item_data.get('accessPolicy', 'Unknown')
         resource_group = item_data.get('resourceGroup', 'Unknown')
-        
-        # ---------------- STAC-only flow ----------------
+
+        # ============================================================
+        # STAC FLOW
+        # ============================================================
         if ogc_resource == 'STAC':
-            
+
             resource_server_id = item_data.get("resourceServer")
-            
+
             try:
-                url =  f'https://dx.geospatial.org.in/dx/cat/v1/item?id={resource_server_id}'
-                print("Fetching catalog item from:", url)
-                resp = requests.get(
-                   url,
-                    timeout=15
-                )
-                
+                url = f'https://dx.geospatial.org.in/dx/cat/v1/item?id={resource_server_id}'
+                resp = requests.get(url, timeout=15)
                 resp.raise_for_status()
                 resource_server_result = resp.json()
             except Exception as e:
                 QMessageBox.critical(None, 'Error', f'Failed to fetch STAC data:\n{e}')
                 return
-
-            print("Catalog item response:", resource_server_result)
 
             results_rs = resource_server_result.get("results", [])
             if not results_rs:
@@ -1201,13 +1196,8 @@ class Ugix_resources:
                 QMessageBox.warning(None, "Warning", "Resource server URL missing.")
                 return
 
-            print("Resource server:", resource_server_url)
-
             stac_url = f"https://{resource_server_url}/stac/collections/{item_id}/items?limit=12"
 
-            print("STAC URL:", stac_url)
-
-            print(f"Fetching STAC items from: {stac_url}")
             try:
                 stac_resp = requests.get(
                     stac_url,
@@ -1216,181 +1206,178 @@ class Ugix_resources:
                 )
                 stac_resp.raise_for_status()
                 stac_data = stac_resp.json()
+
             except Exception as e:
                 QMessageBox.critical(None, 'Error', f'Failed to fetch STAC items:\n{e}')
                 return
 
-            self.open_stac_items_dialog(stac_data,item_data)
+            self.access_token = Public_data_access_token
+            self.open_stac_items_dialog(stac_data, item_data)
             return
 
-        # ---------------- Fetch Mode Dialog ----------------
-        
-        else:
+        # ============================================================
+        # FEATURES FLOW
+        # ============================================================
 
-            data_descriptor = results[0]["dataDescriptor"]
+        data_descriptor = results[0]["dataDescriptor"]
 
-            mode_dialog = FetchModeDialog(self.iface.mainWindow())
-            if mode_dialog.exec_() != QDialog.Accepted:
+        mode_dialog = FetchModeDialog(self.iface.mainWindow())
+        if mode_dialog.exec_() != QDialog.Accepted:
+            return
+
+        fetch_mode = mode_dialog.mode
+        attribute_filter = None
+
+        if fetch_mode == "BBOX":
+            self.start_bbox_selection(item_data)
+            return
+
+        elif fetch_mode == "ATTR":
+
+            EXCLUDE_KEYS = [
+                '@context', 'type', 'dataDescriptorLabel',
+                'description', 'geometry', 'observationDateTime'
+            ]
+
+            filterable_keys = [k for k in data_descriptor.keys() if k not in EXCLUDE_KEYS]
+
+            if not filterable_keys:
+                QMessageBox.information(None, "Info", "No filterable attributes found.")
                 return
 
-            fetch_mode = mode_dialog.mode
-            attribute_filter = None 
+            attr_dialog = AttributeFilterDialog(item_id, filterable_keys, self.iface.mainWindow())
 
-            if fetch_mode == "BBOX":
-                self.start_bbox_selection(item_data)
-                return 
-                
-            elif fetch_mode == "ATTR":
-                EXCLUDE_KEYS = [
-                    '@context', 'type', 'dataDescriptorLabel', 
-                    'description', 'geometry', 'observationDateTime'
-                ]
-                filterable_keys = [k for k in data_descriptor.keys() if k not in EXCLUDE_KEYS]
-
-                if not filterable_keys:
-                    QMessageBox.information(None, "Info", "No filterable attributes found.")
-                    return
-
-                attr_dialog = AttributeFilterDialog(item_id, filterable_keys, self.iface.mainWindow())
-                if attr_dialog.exec_() != QDialog.Accepted:
-                    return
-
-                attribute_filter = attr_dialog.get_selected_filters()
-
-                if not attribute_filter:
-                    QMessageBox.warning(None, "Warning", "No attribute filters provided.")
-                    return
-
-                print("Selected attribute filters:", attribute_filter)
-
-            if access_policy == 'SECURE':
-                url = f'https://catalogue.geospatial.org.in/dataset/{resource_group}'
-                
-                # Fetch token for secure access
-                token_url = 'https://dx.gsx.org.in/auth/v1/token'
-                token_headers = {
-                    'clientId': self.client_id,
-                    'clientSecret': self.client_secret,     
-                    'Content-Type': 'application/json',
-                    # 'Authorization': f'Bearer {self.access_token}'
-                    }
-                token_body = {
-                    "itemId": item_data.get('id'),
-                    "itemType": "resource",
-                    "role": "consumer"
-                }
-
-                try:
-                    token_response = requests.post(token_url, json=token_body, headers=token_headers)
-                    token_response.raise_for_status()
-
-                    token_data = token_response.json()
-                    self.access_token = token_data['results']['accessToken']
-
-
-                    if not self.access_token:
-                        raise ValueError("Access token not received.")
-                except Exception as e:
-                    ###############
-                    # QMessageBox.information(None, 'Access Token', f"client_id: {self.client_id}")
-
-                    message_box = QMessageBox()
-                    message_box.setIcon(QMessageBox.Information)
-                    message_box.setWindowTitle('Private Data')
-                    message_box.setText('You do not have access to view this data.')
-                    message_box.setInformativeText('Please visit the GDI page to request access.')
-                    visit_page_button = message_box.addButton('Visit Page', QMessageBox.ActionRole)
-                    message_box.addButton(QMessageBox.Ok)
-                    message_box.exec_()
-
-                    if message_box.clickedButton() == visit_page_button:
-                        webbrowser.open(url)
-
-                    return
-
-            item_id = item_data.get('id')
-            if not item_id:
-                QMessageBox.warning(None, 'Warning', 'No ID available for the selected item.')
+            if attr_dialog.exec_() != QDialog.Accepted:
                 return
 
-            progress_dialog = QProgressDialog("Fetching and processing data, please wait...", "Cancel", 0, 100)
-            self.progress_dialog = progress_dialog
-            progress_dialog.setWindowTitle("Loading")
-            progress_dialog.setWindowModality(Qt.ApplicationModal)
-            progress_dialog.setMinimumDuration(0)
-            progress_dialog.setValue(0)
-            progress_dialog.setStyleSheet("QLabel { color : black; }")
-            progress_dialog.show()
+            attribute_filter = attr_dialog.get_selected_filters()
 
-            QApplication.processEvents()
+            if not attribute_filter:
+                QMessageBox.warning(None, "Warning", "No attribute filters provided.")
+                return
 
-            offset = 1
-            all_features = []
+        # ---------------- SECURE TOKEN ----------------
+
+        if access_policy == 'SECURE':
+
+            url = f'https://catalogue.geospatial.org.in/dataset/{resource_group}'
+
+            token_url = 'https://dx.geospatial.org.in/auth/v1/token'
+            token_headers = {
+                'clientId': self.client_id,
+                'clientSecret': self.client_secret,
+                'Content-Type': 'application/json'
+            }
+
+            token_body = {
+                "itemId": item_id,
+                "itemType": "resource",
+                "role": "consumer"
+            }
 
             try:
-                while True:
-                    
-                    if fetch_mode == "ATTR":
-                        
-                        url = f'https://geoserver.dx.geospatial.org.in/collections/{item_id}/items'
-                        params = {
-                            'offset': offset
-                        }
-                        params.update(attribute_filter)
+                token_response = requests.post(token_url, json=token_body, headers=token_headers)
+                token_response.raise_for_status()
+                print("Response : ",token_response)
+                token_data = token_response.json()
+                self.access_token = token_data['results']['accessToken']
+                server_secure = token_data['results']['server']
+                print("Server  : ",server_secure)
 
-                    else:
-                        url = f'https://geoserver.dx.geospatial.org.in/collections/{item_id}/items'
-                        params = {
-                            'offset': offset
-                        }
-                    
-                    headers = {
-                        'Content-Type': 'application/json'
-                    }
+            except Exception as e:
+                print("Error : ",e)
+                message_box = QMessageBox()
+                message_box.setIcon(QMessageBox.Information)
+                message_box.setWindowTitle('Private Data')
+                message_box.setText('You do not have access to view this data.')
+                message_box.setInformativeText('Please visit the GDI page to request access.')
 
-                    # Add Authorization header if access_token is available
-                    if self.access_token:
-                        headers['Authorization'] = f'Bearer {self.access_token}'
-                    ####################
-                    # QMessageBox.information(None, 'Access Token', f"Access Token: {self.access_token}")
+                visit_page_button = message_box.addButton('Visit Page', QMessageBox.ActionRole)
+                message_box.addButton(QMessageBox.Ok)
+                message_box.exec_()
 
-                    response = requests.get(url, params=params, headers=headers)
-                    response.raise_for_status()
+                if message_box.clickedButton() == visit_page_button:
+                    webbrowser.open(url)
 
-                    response_data = response.json()
-                    
-                    features = response_data.get('features', [])
-                    all_features.extend(features)
-
-                    number_matched = response_data.get('numberMatched', 0)
-                    number_returned = response_data.get('numberReturned', 0)
-
-
-                    offset += number_returned
-
-                    if number_matched > 0:
-                        progress_value = int((offset / number_matched) * 100)
-                        progress_dialog.setValue(progress_value)
-                        QApplication.processEvents()
-
-                    if offset >= number_matched:
-                        break
-
-
-            except requests.RequestException as e:
-                progress_dialog.close()
-                QMessageBox.critical(None, 'Error', f'Failed to fetch data from API: {e}')
-                if e.response is not None:
-                    QMessageBox.critical(None, 'Error Response', f'Error Response:\n{e.response.text}')
                 return
-            
-            self.access_token = Public_data_access_token    
-            if not all_features:
-                progress_dialog.close()
-                QMessageBox.information(None, 'Info', 'No features found for the selected item.')
-                return
-            
-            self.plot_features(all_features,item_data)
+
+        # ---------------- Progress Dialog ----------------
+
+        progress_dialog = QProgressDialog(
+            "Fetching and processing data, please wait...", "Cancel", 0, 100
+        )
+
+        self.progress_dialog = progress_dialog
+        progress_dialog.setWindowTitle("Loading")
+        progress_dialog.setWindowModality(Qt.ApplicationModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        progress_dialog.show()
+
+        QApplication.processEvents()
+
+        offset = 1
+        all_features = []
+        
+        if server_secure:
+            server = server_secure
+
+        try:
+
+            while True:
+
+                url = f'https://{server}/collections/{item_id}/items'
+
+                params = {'offset': offset}
+
+                if fetch_mode == "ATTR":
+                    params.update(attribute_filter)
+
+                headers = {'Content-Type': 'application/json'}
+
+                if self.access_token:
+                    headers['Authorization'] = f'Bearer {self.access_token}'
+
+                response = requests.get(url, params=params, headers=headers)
+                response.raise_for_status()
+
+                response_data = response.json()
+
+                features = response_data.get('features', [])
+                all_features.extend(features)
+
+                number_matched = response_data.get('numberMatched', 0)
+                number_returned = response_data.get('numberReturned', 0)
+
+                offset += number_returned
+
+                if number_matched > 0:
+                    progress_value = int((offset / number_matched) * 100)
+                    progress_dialog.setValue(progress_value)
+                    QApplication.processEvents()
+
+                if offset >= number_matched:
+                    break
+
+        except requests.RequestException as e:
+
+            progress_dialog.close()
+
+            QMessageBox.critical(None, 'Error', f'Failed to fetch data from API: {e}')
+
+            if e.response is not None:
+                QMessageBox.critical(None, 'Error Response', f'Error Response:\n{e.response.text}')
+
+            return
+
+        self.access_token = Public_data_access_token
+
+        if not all_features:
+            progress_dialog.close()
+            QMessageBox.information(None, 'Info', 'No features found for the selected item.')
+            return
+
+        self.plot_features(all_features, item_data)
     
 
 
